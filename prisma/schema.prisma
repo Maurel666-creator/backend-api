@@ -1,0 +1,242 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Library {
+  id         Int          @id @default(autoincrement())
+  name       String
+  address    String?
+  contact    String?
+  books      Book[]
+  users      User[]
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  Attendance Attendance[]
+  QRCode     QRCode[]
+}
+
+model User {
+  id            Int               @id @default(autoincrement())
+  email         String            @unique
+  password      String
+  firstName     String
+  lastName      String
+  phone         String?
+  role          UserRole          @default(CLIENT)
+  libraryId     Int?
+  library       Library?          @relation(fields: [libraryId], references: [id])
+  reservations  Reservation[]
+  lastConnected DateTime?
+  loans         Loan[]
+  sales         Sale[]
+  feedbacks     Feedback[]
+  penalties     Penalty[]
+  notifications Notification[]
+  addresses     DeliveryAddress[]
+  logs          ActionLog[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  Attendance    Attendance[]
+}
+
+enum UserRole {
+  ADMIN // Admin global
+  MANAGER // Gestionnaire de bibliothèque
+  CLIENT // Lecteur/client
+  DELIVERY // Livreur
+}
+
+model Book {
+  id           Int           @id @default(autoincrement())
+  title        String
+  authorId     Int
+  categoryId   Int
+  libraryId    Int
+  author       Author        @relation(fields: [authorId], references: [id])
+  category     Category      @relation(fields: [categoryId], references: [id])
+  library      Library       @relation(fields: [libraryId], references: [id])
+  isbn         String?       @unique
+  language     String?
+  summary      String?
+  genre        String?
+  pages        Int?
+  edition      String?
+  coverUrl     String? // Lien fourni par le front-end
+  status       BookStatus    @default(AVAILABLE)
+  price        Float? // Si vendable
+  isSellable   Boolean       @default(false)
+  reservations Reservation[]
+  loans        Loan[]
+  sales        Sale[]
+  feedbacks    Feedback[]
+  stock        BookStock?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+enum BookStatus {
+  AVAILABLE
+  RESERVED
+  LOANED
+  SOLD
+}
+
+model BookStock {
+  id       Int  @id @default(autoincrement())
+  bookId   Int  @unique
+  quantity Int // Nombre d'exemplaires disponibles
+  book     Book @relation(fields: [bookId], references: [id])
+}
+
+model Feedback {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  bookId    Int
+  rating    Int // 1 à 5
+  comment   String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  book      Book     @relation(fields: [bookId], references: [id])
+}
+
+model Penalty {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  loanId    Int
+  amount    Float
+  reason    String?
+  paid      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  loan      Loan     @relation(fields: [loanId], references: [id])
+}
+
+model DeliveryAddress {
+  id      Int     @id @default(autoincrement())
+  userId  Int
+  address String
+  city    String
+  country String
+  phone   String?
+  user    User    @relation(fields: [userId], references: [id])
+  sales   Sale[]
+}
+
+model ActionLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  type      String // email, sms, in-app
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Author {
+  id        Int     @id @default(autoincrement())
+  firstName String
+  lastName  String
+  bio       String?
+  books     Book[]
+}
+
+model Category {
+  id    Int     @id @default(autoincrement())
+  name  String
+  color String?
+  books Book[]
+}
+
+model Reservation {
+  id         Int               @id @default(autoincrement())
+  userId     Int
+  bookId     Int
+  status     ReservationStatus @default(PENDING)
+  reservedAt DateTime          @default(now())
+  expiresAt  DateTime?
+  user       User              @relation(fields: [userId], references: [id])
+  book       Book              @relation(fields: [bookId], references: [id])
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+model Loan {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  bookId     Int
+  loanedAt   DateTime  @default(now())
+  dueAt      DateTime
+  returnedAt DateTime?
+  user       User      @relation(fields: [userId], references: [id])
+  book       Book      @relation(fields: [bookId], references: [id])
+  penalties  Penalty[]
+}
+
+model Sale {
+  id          Int             @id @default(autoincrement())
+  userId      Int
+  bookId      Int
+  addressId   Int
+  price       Float
+  status      SaleStatus      @default(PENDING)
+  orderedAt   DateTime        @default(now())
+  deliveredAt DateTime?
+  user        User            @relation(fields: [userId], references: [id])
+  book        Book            @relation(fields: [bookId], references: [id])
+  address     DeliveryAddress @relation(fields: [addressId], references: [id])
+}
+
+enum SaleStatus {
+  PENDING // Commandé, en attente de livraison
+  DELIVERED // Livré et payé
+  CANCELLED
+}
+
+model Attendance {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  libraryId Int
+  scannedAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  library   Library  @relation(fields: [libraryId], references: [id])
+  QRCode    QRCode?  @relation(fields: [qRCodeId], references: [id])
+  qRCodeId  Int?
+}
+
+model QRCode {
+  id          Int          @id @default(autoincrement())
+  libraryId   Int
+  content     String       @unique // Contenu du QR code (URL ou identifiant unique)
+  imageUrl    String // Chemin vers l'image du QR code stockée
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  library     Library      @relation(fields: [libraryId], references: [id])
+  attendances Attendance[] // Relation avec les scans de ce QR code
+}
