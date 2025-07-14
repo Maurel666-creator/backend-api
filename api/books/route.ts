@@ -1,56 +1,97 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from '@/lib/prisma';
-import { UserRole } from "@/app/generated/prisma";
+import { BookStatus, UserRole } from "@/app/generated/prisma";
 import { ActionType, logAction } from '@/lib/logger';
 import { bookCreateSchema } from "@/lib/validator";
 
 
 export async function GET(request: NextRequest) {
     try {
-        // 1. Récupération des paramètres
+        // 1. Récupération des paramètres de requête
         const { searchParams } = new URL(request.url);
         const search = searchParams.get('search') || '';
         const limit = Math.min(Number(searchParams.get('limit')) || 20, 100);
         const page = Number(searchParams.get('page')) || 1;
         const skip = (page - 1) * limit;
 
-        // 2. Récupération des headers d'authentification
-        const headers = request.headers;
-        const userRole = headers.get('x-user-role') as UserRole;
-        const userLibraryId = headers.get('x-user-library-id');
+        // 2. Récupération des filtres
+        const libraryId = searchParams.get('libraryId');
+        const categoryId = searchParams.get('categoryId');
+        const authorId = searchParams.get('authorId');
+        const status = searchParams.get('status') as BookStatus | null;
+        const isSellable = searchParams.get('isSellable');
+        const language = searchParams.get('language');
+        const minPages = searchParams.get('minPages');
+        const maxPages = searchParams.get('maxPages');
 
-        // 3. Construction du filtre
+        // 3. Construction du filtre de recherche
         const where: any = {
-            OR: [
-                { title: { contains: search, mode: 'insensitive' } },
+            AND: [
                 {
-                    author: {
-                        OR: [
-                            { firstName: { contains: search, mode: 'insensitive' } },
-                            { lastName: { contains: search, mode: 'insensitive' } }
-                        ]
-                    }
+                    OR: [
+                        { title: { contains: search, mode: 'insensitive' } },
+                        { summary: { contains: search, mode: 'insensitive' } },
+                        { isbn: { contains: search, mode: 'insensitive' } },
+                        {
+                            author: {
+                                OR: [
+                                    { firstName: { contains: search, mode: 'insensitive' } },
+                                    { lastName: { contains: search, mode: 'insensitive' } }
+                                ]
+                            }
+                        }
+                    ]
                 }
             ]
         };
 
-        // Filtre par bibliothèque si MANAGER
-        if (userRole === UserRole.MANAGER && userLibraryId) {
-            where.libraryId = parseInt(userLibraryId);
+        // 4. Ajout des filtres optionnels
+        if (libraryId) {
+            where.AND.push({ libraryId: parseInt(libraryId) });
+        }
+        if (categoryId) {
+            where.AND.push({ categoryId: parseInt(categoryId) });
+        }
+        if (authorId) {
+            where.AND.push({ authorId: parseInt(authorId) });
+        }
+        if (status) {
+            where.AND.push({ status });
+        }
+        if (isSellable) {
+            where.AND.push({ isSellable: isSellable === 'true' });
+        }
+        if (language) {
+            where.AND.push({ language });
+        }
+        if (minPages) {
+            where.AND.push({ pageCount: { gte: parseInt(minPages) } });
+        }
+        if (maxPages) {
+            where.AND.push({ pageCount: { lte: parseInt(maxPages) } });
         }
 
-        // 4. Requête paginée
+        // 5. Requête paginée avec toutes les relations nécessaires
         const [books, totalCount] = await prisma.$transaction([
             prisma.book.findMany({
                 where,
                 select: {
                     id: true,
                     title: true,
+                    summary: true,
                     coverUrl: true,
                     status: true,
-                    author: { select: { firstName: true, lastName: true } },
-                    category: { select: { name: true, color: true } },
-                    library: { select: { name: true } }
+                    isbn: true,
+                    pages: true,
+                    language: true,
+                    isSellable: true,
+                    price: true,
+                    genre: true,
+                    edition: true,
+                    author: { select: { id: true, firstName: true, lastName: true } },
+                    category: { select: { id: true, name: true, color: true } },
+                    library: { select: { id: true, name: true, address: true } },
+                    stock: { select: { quantity: true } },
                 },
                 orderBy: { title: 'asc' },
                 skip,
@@ -59,14 +100,25 @@ export async function GET(request: NextRequest) {
             prisma.book.count({ where })
         ]);
 
-        // 5. Formatage de la réponse
+        // 6. Formatage de la réponse
         return NextResponse.json({
             data: books.map(book => ({
                 ...book,
-                author: `${book.author.firstName} ${book.author.lastName}`,
-                category: book.category.name,
-                categoryColor: book.category.color,
-                library: book.library.name
+                author: {
+                    id: book.author.id,
+                    name: `${book.author.firstName} ${book.author.lastName}`
+                },
+                category: {
+                    id: book.category.id,
+                    name: book.category.name,
+                    color: book.category.color
+                },
+                library: {
+                    id: book.library.id,
+                    name: book.library.name,
+                    address: book.library.address
+                },
+                stock: book.stock?.quantity ?? 0
             })),
             pagination: {
                 total: totalCount,
