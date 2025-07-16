@@ -15,8 +15,7 @@ export async function middleware(request: NextRequest) {
     '/api/auth/callback',
     '/api/auth/providers',
     '/api/auth/session',
-    '/api/auth/csrf',
-    '/api/auth/debug' // <-- Ajoutez votre route de debug ici
+    '/api/auth/csrf'
   ]
 
   if (publicRoutes.some(route => path.startsWith(route))) {
