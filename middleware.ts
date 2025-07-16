@@ -1,31 +1,75 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { verifyToken } from '@/lib/auth'
-import { UserRole } from './app/generated/prisma'
+import { prisma } from '@/lib/prisma'
+import { UserRole } from '@/app/generated/prisma'
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname
   const method = request.method
-  const token = request.cookies.get('auth-token')?.value
 
-  // Routes publiques
-  const publicRoutes = ['/api/auth/login', '/api/auth/register']
-  if (publicRoutes.includes(path)) {
+  // 1. D'abord vérifier les routes complètement publiques
+  const publicRoutes = [
+    '/api/auth/login',
+    '/api/auth/register',
+    '/api/auth/signin',
+    '/api/auth/callback',
+    '/api/auth/providers',
+    '/api/auth/session',
+    '/api/auth/csrf',
+    '/api/auth/debug' // <-- Ajoutez votre route de debug ici
+  ]
+
+  if (publicRoutes.some(route => path.startsWith(route))) {
     return NextResponse.next()
   }
 
-  // Vérification du token
-  if (!token) {
+  // 2. Ensuite vérifier les routes NextAuth protégées différemment
+
+
+  // 3. Enfin, le reste de votre logique d'authentification...
+  const authHeader = request.headers.get('authorization')
+  const sessionToken = authHeader?.split(' ')[1]
+
+  if (!sessionToken) {
     return new NextResponse(
-      JSON.stringify({ error: 'Authentification requise' }), 
+      JSON.stringify({ error: 'Authentification requise' }),
       { status: 401, headers: { 'Content-Type': 'application/json' } }
     )
   }
 
   try {
-    const user = await verifyToken(token)
-    if (!user) {
-      throw new Error('Utilisateur invalide')
+    // Vérification de la session en base de données
+    const session = await prisma.session.findUnique({
+      where: { sessionToken },
+      include: {
+        user: {
+          select: {
+            id: true,
+            role: true,
+            libraryId: true
+          }
+        }
+      }
+    })
+
+    if (!session || new Date(session.expires) < new Date()) {
+      return new NextResponse(
+        JSON.stringify({ error: 'Session expirée ou invalide' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const user = session.user
+
+    // Rafraîchissement de la session si nécessaire
+    if (session.expires.getTime() - Date.now() < 86400000) { // 1 jour
+      const newExpires = new Date()
+      newExpires.setDate(newExpires.getDate() + 30)
+
+      await prisma.session.update({
+        where: { id: session.id },
+        data: { expires: newExpires }
+      })
     }
 
     // Attachement des infos utilisateur
@@ -39,28 +83,23 @@ export async function middleware(request: NextRequest) {
     // Gestion spéciale des routes utilisateurs
     if (path.startsWith('/api/users/')) {
       const userIdInPath = path.split('/').pop()
-      
-      // Autoriser l'accès si:
-      // 1. Route 'me' OU
-      // 2. Même ID que l'utilisateur OU
-      // 3. Rôle ADMIN
+
       const isSelfAccess = (
-        userIdInPath === 'me' || 
+        userIdInPath === 'me' ||
         userIdInPath === user.id.toString() ||
         user.role === UserRole.ADMIN
       )
 
       if (!isSelfAccess) {
         return new NextResponse(
-          JSON.stringify({ 
+          JSON.stringify({
             error: 'Accès refusé',
-            message: 'Vous ne pouvez accéder qu\'à vos propres données' 
+            message: 'Vous ne pouvez accéder qu\'à vos propres données'
           }),
           { status: 403, headers: { 'Content-Type': 'application/json' } }
         )
       }
 
-      // Forcer le paramètre à l'ID réel pour les routes 'me'
       if (userIdInPath === 'me') {
         requestHeaders.set('x-requested-user-id', user.id.toString())
       }
@@ -69,32 +108,33 @@ export async function middleware(request: NextRequest) {
     // Vérification globale des permissions
     if (!hasPermission(user.role, path, method)) {
       return new NextResponse(
-        JSON.stringify({ 
+        JSON.stringify({
           error: 'Permissions insuffisantes',
-          message: 'Votre rôle ne vous permet pas d\'effectuer cette action' 
+          message: 'Votre rôle ne vous permet pas d\'effectuer cette action'
         }),
         { status: 403, headers: { 'Content-Type': 'application/json' } }
       )
     }
 
     return NextResponse.next({ request: { headers: requestHeaders } })
-  } catch {
+  } catch (error) {
+    console.error('Middleware error:', error)
     return new NextResponse(
-      JSON.stringify({ error: 'Token invalide' }),
-      { status: 401, headers: { 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: 'Erreur d\'authentification' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     )
   }
 }
 
-// Permissions simplifiées et plus explicites
+// Fonction hasPermission inchangée
 function hasPermission(role: UserRole, path: string, method: string): boolean {
   const permissions: Record<UserRole, { path: string | RegExp; methods?: string[] }[]> = {
     [UserRole.ADMIN]: [
-      { path: /^\/api\/.*/, methods: ['GET', 'POST', 'PATCH', 'DELETE'] } // Accès complet
+      { path: /^\/api\/.*/, methods: ['GET', 'POST', 'PATCH', 'DELETE'] }
     ],
     [UserRole.MANAGER]: [
       { path: /^\/api\/libraries\/.*/, methods: ['GET', 'PATCH'] },
-      { path: '/api/users', methods: ['GET'] }, 
+      { path: '/api/users', methods: ['GET'] },
       { path: /^\/api\/books\/.*/, methods: ['GET', 'POST', 'PATCH', 'DELETE'] },
       { path: /^\/api\/(loans|reservations|penalties)\/.*/, methods: ['GET', 'POST', 'PATCH'] }
     ],
@@ -111,15 +151,18 @@ function hasPermission(role: UserRole, path: string, method: string): boolean {
   }
 
   return permissions[role]?.some(rule => {
-    const pathMatches = typeof rule.path === 'string' 
-      ? path === rule.path 
+    const pathMatches = typeof rule.path === 'string'
+      ? path === rule.path
       : rule.path.test(path)
-      
+
     const methodMatches = !rule.methods || rule.methods.includes(method)
     return pathMatches && methodMatches
   }) ?? false
 }
 
 export const config = {
-  matcher: ['/api/:path*', '/admin/:path*']
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico).*)',
+    '/api/:path*'
+  ]
 }
